@@ -20,17 +20,15 @@ DERIV_SYMBOL = os.getenv("DERIV_SYMBOL", "frxEURUSD")
 DERIV_STAKE = float(os.getenv("DERIV_STAKE", "1.0"))
 DERIV_DURATION = int(os.getenv("DERIV_DURATION", "5"))
 DERIV_DURATION_UNIT = os.getenv("DERIV_DURATION_UNIT", "m")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MA_LENGTH = int(os.getenv("MA_LENGTH", "5"))
 MA_TYPE = int(os.getenv("MA_TYPE", "1"))
 
-# ---------- Проверки ----------
 if not DERIV_TOKEN:
     raise ValueError("❌ Не задан DERIV_API_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ Не задан TELEGRAM_BOT_TOKEN")
 
-# ---------- Настройка логирования ----------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -38,8 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------- Глобальное хранилище ----------
-admin_chat_id: Optional[int] = None  # <-- сюда сохраним ваш chat_id
+admin_chat_id: Optional[int] = None
 stats = {
     "total": 0,
     "wins": 0,
@@ -48,7 +45,7 @@ stats = {
     "signals": []
 }
 
-# ---------- Вспомогательные индикаторы ----------
+# ---------- Индикаторы ----------
 def mod_hull(src: pd.Series, length: int) -> pd.Series:
     half = length // 2
     sqrt_len = int(round(np.sqrt(length)))
@@ -83,7 +80,6 @@ def calc_ma(series: pd.Series, ma_type: int, length: int) -> pd.Series:
     else:
         return series.rolling(window=length).mean()
 
-# ---------- Определение сигнала ----------
 def generate_signal(closes: pd.Series, ma_type: int, length: int) -> Optional[str]:
     if len(closes) < length + 2:
         return None
@@ -109,26 +105,22 @@ def generate_signal(closes: pd.Series, ma_type: int, length: int) -> Optional[st
         return "SHORT"
     return None
 
-# ---------- Работа с Deriv API ----------
+# ---------- Работа с Deriv ----------
 class DerivTrader:
     def __init__(self):
-        self.api = DerivAPI(app_id=11780)
+        self.api = DerivAPI(app_id=11780)  # Официальный объект, connect не нужен
         self.symbol = DERIV_SYMBOL
         self.running = False
         self.candles = pd.DataFrame(columns=["close"])
 
-    async def connect(self):
-        self.connection = await self.api.connect()
-        logger.info("✅ Подключено к Deriv API")
-
     async def authorize(self):
-        authorize = await self.connection.authorize(DERIV_TOKEN)
+        authorize = await self.api.authorize(DERIV_TOKEN)
         if authorize.get("error"):
             raise Exception(f"Ошибка авторизации: {authorize['error']}")
         logger.info("✅ Авторизовано")
 
     async def get_history(self, count=50):
-        response = await self.connection.ticks_history({
+        response = await self.api.ticks_history({
             "ticks_history": self.symbol,
             "adjust_start_time": 1,
             "count": count,
@@ -148,7 +140,7 @@ class DerivTrader:
         self.running = True
         last_candle_time = None
         while self.running:
-            response = await self.connection.ticks_history({
+            response = await self.api.ticks_history({
                 "ticks_history": self.symbol,
                 "adjust_start_time": 1,
                 "count": 1,
@@ -184,7 +176,7 @@ class DerivTrader:
     async def place_trade(self, direction: str):
         contract_type = "CALL" if direction == "LONG" else "PUT"
         try:
-            proposal = await self.connection.proposal({
+            proposal = await self.api.proposal({
                 "proposal": 1,
                 "amount": DERIV_STAKE,
                 "basis": "stake",
@@ -199,7 +191,7 @@ class DerivTrader:
                 return
 
             proposal_id = proposal["proposal"]["id"]
-            buy = await self.connection.buy({
+            buy = await self.api.buy({
                 "buy": proposal_id,
                 "price": DERIV_STAKE
             })
@@ -228,7 +220,7 @@ class DerivTrader:
 
     async def monitor_contract(self, contract_id):
         try:
-            subscription = await self.connection.subscribe({
+            subscription = await self.api.subscribe({
                 "proposal_open_contract": 1,
                 "contract_id": contract_id
             })
@@ -256,11 +248,11 @@ class DerivTrader:
             stats["pending"] -= 1
             stats["losses"] += 1
 
-# ---------- Telegram функции ----------
+# ---------- Telegram ----------
 async def send_telegram_message(text: str):
     global admin_chat_id
     if not admin_chat_id:
-        logger.warning("❌ Не указан TELEGRAM_CHAT_ID и ни один пользователь не отправил /start. Сообщение не отправлено.")
+        logger.warning("❌ Админ ещё не отправил /start, сообщение не отправлено.")
         return
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -268,7 +260,6 @@ async def send_telegram_message(text: str):
     except Exception as e:
         logger.error(f"Ошибка отправки сообщения в Telegram: {e}")
 
-# ---------- Команды Telegram ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global admin_chat_id
     admin_chat_id = update.effective_chat.id
@@ -296,8 +287,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Запуск ----------
 async def main():
     trader = DerivTrader()
-    await trader.connect()
-    await trader.authorize()
+    await trader.authorize()  # Авторизация без connect
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
