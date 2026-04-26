@@ -1,5 +1,0 @@
-deriv-api
-python-telegram-bot
-pandas
-numpy
-python-dotenv
